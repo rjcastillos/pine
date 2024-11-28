@@ -1,25 +1,97 @@
 // This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// second gen starts at 2024.11.18 23:00
+// ATR introduced on 2024.11.20 16:15
+// Long Profitaker started on 2024.11.20 23:59
+// Adding Shorts on 2024.11.22 15:00
+// Equivalent at v170 in TW
+//                                      https://www.tradingcode.net/tradingview/margin-short-orders/
+//
+// Best long before fixing shorts 2024.25.11 10:20
+// First short working but not in sync with longs 2024.27.11 14:30
 // © rjcastillos
 
 //@version=5
-// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
-// © rjcastillos
+strategy("SniperNine", overlay=true,calc_on_every_tick=false,initial_capital=10000,default_qty_type=strategy.percent_of_equity, default_qty_value=100,margin_short = 5,margin_long = 5)
+//plot(close)
 
-//@version=5
+// Get user input
+i_ma9           = input.int(title="SMA 1 Length", defval=9, step=10, group="Strategy Parameters", tooltip="Long-term MA")
+i_stopPercent   = input.float(title="Stop Loss Percent", defval=0.015, step=0.1, group="Strategy Parameters", tooltip="Failsafe Stop Loss Percent Decline")
+i_lowerClose    = input.bool(title="Exit On Lower Close", defval=true, group="Strategy Parameters", tooltip="Wait for a lower-close before exiting a long position")
+i_RealTime    = input.bool(title="Calc on every tick on/off", defval=false, group="Strategy Parameters", tooltip="run at the end of every candle ")
+i_Shorting     = input.bool(title="Openining shorts positions", defval=false, group="Strategy Parameters", tooltip="Default on will enter a short below ema9 and close it on next long")
+i_ProfitTakerL1   = input.float(title="Long Profit Taker Percent", defval=1.02, step=0.1, group="Strategy Parameters", tooltip="Firt Profit taker for long position")
+i_startTime     = input.time(title="Start Filter", defval=timestamp("01 Jun 2024 13:30 +0000"), group="Time Filter", tooltip="Start date & time to begin searching for setups")
+i_endTime       = input.time(title="End Filter", defval=timestamp("1 Jan 2099 19:30 +0000"), group="Time Filter", tooltip="End date & time to stop searching for setups")
 
-strategy("SniperNine")
 
-ema9 = ta.ema(close ,9)
+// Get indicator values
+ema9 = ta.sma(close ,i_ma9)
 
-long =  close > ema9 and open > close
-short = open < ema9 and close < open
+// Check filter(s)
+f_dateFilter = time >= i_startTime and time <= i_endTime
 
-start  = timestamp(2024 , 01 , 01,00 , 00 , 00)
-end = timestamp(2024 , 11 , 16 ,00 , 00 , 00)
+// Check buy/sell conditions
+var float buyPrice = 0
+var float shortPrice = 0
+var float PrebuyLow = 0
 
-if time > start
-    strategy.entry("Long", strategy.long , 100.0 , when = long)
-    strategy.entry("Short", strategy.short , 100.0 , when = short)
+buyLongCondition    = close > ema9 and strategy.position_size <= 0 and f_dateFilter
+//Gen 0 + buyLongCondition = strategy.position_size == 0 and f_dateFilter and open > ema9
+//1st Gen buyLongCondition = strategy.position_size == 0 and f_dateFilter and close > ema9 and open > close
+//2nd Gen buyLongCondition    = open > ema9 and close > open  and strategy.position_size == 0 and f_dateFilter
+//3rd Gen buyLongCondition    = close > ema9 and strategy.position_size == 0 and f_dateFilter
+//long =  close > ema9 and open > close
+//short = open < ema9 and close < open
+CloseLongCondition =  strategy.position_size > 0 and (not i_lowerClose or close < low[1] and close[1]<ema9)
+stopDistance    = strategy.position_size > 0 ? ((buyPrice - close) / close) : na
+stopPrice       = strategy.position_size > 0 ? buyPrice - (buyPrice * i_stopPercent) : na
+stopCondition   = strategy.position_size > 0 and stopDistance > i_stopPercent
+stopLongLowerATR    = strategy.position_size > 0 and close < low[1]-ta.atr(14)
+stopreviousLow = strategy.position_size > 0 and close < PrebuyLow
+//
+// Shorts
+//
+OpenShort =   ema9 > close and f_dateFilter 
 
-    strategy.close("Long", when = short)
-    strategy.close("Short", when = long)
+
+// Enter positions
+if buyLongCondition
+    strategy.close(id="Short", comment = "Closing short")
+    strategy.entry(id="Long", direction=strategy.long)
+    strategy.exit(id="Long",comment = "Exit PFT=1",limit = high*i_ProfitTakerL1, qty_percent=100)
+    shortPrice := na
+    PrebuyLow := low[1]
+
+
+if buyLongCondition[1]
+    buyPrice := open
+
+// Close Long positions
+if stopreviousLow 
+    strategy.close(id="Long", comment="Close previous low")
+    buyPrice := na
+if stopLongLowerATR 
+    strategy.close(id="Long", comment="Close long lower ATR ")
+    buyPrice := na
+if CloseLongCondition or stopCondition
+    strategy.close(id="Long", comment="Close long" + (stopCondition ? "SL=true" : ""))
+    buyPrice := na
+
+if OpenShort and i_Shorting 
+    strategy.entry(id = "Short" ,comment ="Shorting",direction = strategy.short )
+
+if OpenShort[1]
+    shortPrice := open
+
+// Draw pretty colors
+plot(buyPrice, color=color.lime, style=plot.style_linebr)
+plot(stopPrice, color=#fd0909, style=plot.style_linebr, offset=-1)
+plot(open-ta.atr(14), color=color.black, style=plot.style_linebr)
+//plot(ta.atr(14))
+plot(ema9, color=color.purple)
+plot(shortPrice, color=color.rgb(245, 77, 11), style=plot.style_linebr)
+
+//strategy.close("Long", when = short)
+// strategy.close("Short", when = long)
+
