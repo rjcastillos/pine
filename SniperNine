@@ -3,7 +3,6 @@
 // ATR introduced on 2024.11.20 16:15
 // Long Profitaker started on 2024.11.20 23:59
 // Adding Shorts on 2024.11.22 15:00
-// Equivalent at v170 in TW
 //                                      https://www.tradingcode.net/tradingview/margin-short-orders/
 //
 // Best long before fixing shorts 2024.25.11 10:20
@@ -11,7 +10,7 @@
 // © rjcastillos
 
 //@version=5
-strategy("SniperNine", overlay=true,calc_on_every_tick=false,initial_capital=10000,default_qty_type=strategy.percent_of_equity, default_qty_value=100,margin_short = 5,margin_long = 5)
+strategy("SniperNine", overlay=true,calc_on_every_tick=true,initial_capital=10000,default_qty_type=strategy.percent_of_equity, default_qty_value=100,margin_short = 5,margin_long = 5)
 //plot(close)
 
 // Get user input
@@ -81,17 +80,18 @@ if CloseLongCondition or stopCondition
 if OpenShort and i_Shorting 
     strategy.entry(id = "Short" ,comment ="Shorting",direction = strategy.short )
 
-if OpenShort[1]
+if OpenShort[1] and i_Shorting 
     shortPrice := open
 
 // Draw pretty colors
 plot(buyPrice, color=color.lime, style=plot.style_linebr)
 plot(stopPrice, color=#fd0909, style=plot.style_linebr, offset=-1)
-plot(open-ta.atr(14), color=color.black, style=plot.style_linebr)
+//plot(open-ta.atr(14), color=color.black, style=plot.style_linebr)
 //plot(ta.atr(14))
 plot(ema9, color=color.purple)
-plot(shortPrice, color=color.rgb(245, 77, 11), style=plot.style_linebr)
+plot(shortPrice, color=color.rgb(245, 77, 11), style=plot.style_linebr,offset=-1)
 
 //strategy.close("Long", when = short)
 // strategy.close("Short", when = long)
+
 
