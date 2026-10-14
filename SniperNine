@@ -3,6 +3,8 @@
 // ATR introduced on 2024.11.20 16:15
 // Long Profitaker started on 2024.11.20 23:59
 // Adding Shorts on 2024.11.22 15:00
+// Working version 178 Dec 3 15:21
+// Adding Close positions at the end of the trading session 
 //                                      https://www.tradingcode.net/tradingview/margin-short-orders/
 //
 // Best long before fixing shorts 2024.25.11 10:20
@@ -10,7 +12,7 @@
 // © rjcastillos
 
 //@version=5
-strategy("SniperNine", overlay=true,calc_on_every_tick=true,initial_capital=10000,default_qty_type=strategy.percent_of_equity, default_qty_value=100,margin_short = 5,margin_long = 5)
+strategy("SniperNine", overlay=true,calc_on_every_tick=false,initial_capital=10000,default_qty_type=strategy.percent_of_equity, default_qty_value=100,margin_short = 5,margin_long = 5)
 //plot(close)
 
 // Get user input
@@ -20,12 +22,14 @@ i_lowerClose    = input.bool(title="Exit On Lower Close", defval=true, group="St
 i_RealTime    = input.bool(title="Calc on every tick on/off", defval=false, group="Strategy Parameters", tooltip="run at the end of every candle ")
 i_Shorting     = input.bool(title="Openining shorts positions", defval=false, group="Strategy Parameters", tooltip="Default on will enter a short below ema9 and close it on next long")
 i_ProfitTakerL1   = input.float(title="Long Profit Taker Percent", defval=1.02, step=0.1, group="Strategy Parameters", tooltip="Firt Profit taker for long position")
-i_startTime     = input.time(title="Start Filter", defval=timestamp("01 Jun 2024 13:30 +0000"), group="Time Filter", tooltip="Start date & time to begin searching for setups")
+i_startTime     = input.time(title="Start Filter", defval=timestamp("01 Sep 2024 13:30 +0000"), group="Time Filter", tooltip="Start date & time to begin searching for setups")
 i_endTime       = input.time(title="End Filter", defval=timestamp("1 Jan 2099 19:30 +0000"), group="Time Filter", tooltip="End date & time to stop searching for setups")
-
-
+i_endOfSession  = input.session(title="End of Regular hours session", defval="1559-1559", group="Time Filter" ,tooltip="second of the day previous to the end of the session")
+i_RTH = input.session(title="Regular Trading Hours EST ", defval="0930-1600", tooltip="RTH is Regular Trading Hours for US markets 9:30 am to 4:00 PM")
+i_ETH = input.session(title="Extended Trading Hours EST ", defval="0500-235959", tooltip="ETH is Extended Pre-market trading, typically  from 7 to 9:30 a.m. ET and after-hours trading from 4 to 8 p.m. ETTrading Hours for US markets 9:30 am to 4:00 PM")
+i_CloseatEnd    = input.bool(title="Close position at the end of the day", defval=false, group="Strategy Parameters", tooltip="Close positions at 15 EST ")
 // Get indicator values
-ema9 = ta.sma(close ,i_ma9)
+ema9 = ta.ema(close ,i_ma9)
 
 // Check filter(s)
 f_dateFilter = time >= i_startTime and time <= i_endTime
@@ -73,15 +77,29 @@ if stopreviousLow
 if stopLongLowerATR 
     strategy.close(id="Long", comment="Close long lower ATR ")
     buyPrice := na
-if CloseLongCondition or stopCondition
-    strategy.close(id="Long", comment="Close long" + (stopCondition ? "SL=true" : ""))
+if CloseLongCondition
+    strategy.close(id="Long", comment="Close long")
     buyPrice := na
+
+if stopCondition
+    strategy.close(id="Long", comment="Close x Stop loss")
+    buyPrice := na
+
 
 if OpenShort and i_Shorting 
     strategy.entry(id = "Short" ,comment ="Shorting",direction = strategy.short )
 
 if OpenShort[1] and i_Shorting 
     shortPrice := open
+
+if i_CloseatEnd and (hour)==15 and (minute) >=59 and (second) >= 50
+    strategy.close_all(comment = "End of Day Close")
+    buyPrice := na
+
+
+// This function returns true if the current bar falls within the given time session (:1234567 is to include all weekdays)
+inSession(sess) => na(time(timeframe.period, sess + ":1234567")) == false and time >= i_startTime and time <= i_endTime
+
 
 // Draw pretty colors
 plot(buyPrice, color=color.lime, style=plot.style_linebr)
@@ -93,5 +111,4 @@ plot(shortPrice, color=color.rgb(245, 77, 11), style=plot.style_linebr,offset=-1
 
 //strategy.close("Long", when = short)
 // strategy.close("Short", when = long)
-
 
