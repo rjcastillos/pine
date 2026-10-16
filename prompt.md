@@ -1,0 +1,1 @@
+This is a pine script running in tradingview , please implement the new input `profitTargetPct`, this shall be able to turn on-off and when on apply to exit a trade once the PnL reaches the `profitTargetPct`, once the new code is in place I will copy and test it in the platform.

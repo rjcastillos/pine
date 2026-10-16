@@ -1,0 +1,281 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// second gen starts at 2024.11.18 23:00
+// ATR introduced on 2024.11.20 16:15
+// Long Profitaker started on 2024.11.20 23:59
+// Adding Shorts on 2024.11.22 15:00
+// Working version 178 Dec 3 15:21
+// Adding Close positions at the end of the trading session 
+//                                      https://www.tradingcode.net/tradingview/margin-short-orders/
+//
+// Best long before fixing shorts 2024.11.25 10:20
+// First short working but not in sync with longs 2024.11.27 14:30
+// refactored it to improve strategy focus 2026.10.11
+// ## upgrade the pine version to version 6
+// Adding new focus in the straegy including trend recoginnition  
+// © rjcastillos
+
+//@version=6
+strategy("Sniper9_trend", overlay=true, calc_on_every_tick=false, initial_capital=3000, default_qty_type=strategy.percent_of_equity, default_qty_value=100, margin_short=5, margin_long=5, pyramiding=1, commission_type=strategy.commission.cash_per_order, commission_value=1, slippage=1)
+
+useChartTf = input.bool(true, "Use Chart Timeframe", group="Strategy Parameters")
+analysisTf = input.timeframe("240", "Analysis Interval (when 'Use Chart Timeframe' is off)", options=["30", "60", "240", "D", "W"], group="Strategy Parameters")
+emaLen = input.int(9, "EMA Length", minval=1, group="Strategy Parameters")
+
+trendLookback = input.int(9, "Trend Lookback Candles", minval=1, group="Trend")
+trendMinCount = input.int(4, "Trend Minimum Count (of lookback)", minval=1, group="Trend")
+trendConfirmCandles = input.int(3, "Trend Confirmation Candles (all green / all red)", minval=1, group="Trend")
+
+useAtrStop = input.bool(true, "Use ATR Stop", group="Exits (Stop Loss)")
+atrLen = input.int(14, "ATR Length", minval=1, group="Exits (Stop Loss)")
+atrStopMult = input.float(1.5, "ATR Stop Multiple", minval=0.1, step=0.1, group="Exits (Stop Loss)")
+
+profitTargetPct = input.float(10.0, title="Profit Taker (% of Investment)", minval=0.01, step=0.1)
+
+useHtfConfirm = input.bool(true, "Use Higher Interval Confirmation (EMA9)", tooltip="When ON, a long is only taken when price is above the EMA9 of the confirmation interval, and a short only when price is below it.", group="Higher Interval Confirmation")
+confirmTfOpt = input.string("Auto", "Confirmation Interval", options=["Auto", "30", "60", "240", "D", "W", "M"], tooltip="Auto uses this forced ladder: 30m->4H; 1H->1D; 4H->1D; 1D->1W; 1W->1M.", group="Higher Interval Confirmation")
+showHtfEma = input.bool(true, "Plot Confirmation EMA9", group="Higher Interval Confirmation")
+showEma9 = input.bool(true,  "Show EMA9",      group="Chart Overlays")
+showFastEma = input.bool(true,  "Show Fast EMA",  group="Chart Overlays")
+showSlowEma = input.bool(true,  "Show Slow EMA",  group="Chart Overlays")
+showSma20 = input.bool(false, "Show SMA20",     group="Chart Overlays")
+
+startFilter = input.time(timestamp("01 Sep 2024 13:30 +0000"), "Start Filter", group="Time Filter")
+endFilter = input.time(timestamp("1 Jan 2099 19:30 +0000"), "End Filter", group="Time Filter")
+
+f_data(_emaLen, _lookback, _minCount, _confirmN, _atrLen) =>
+    emaVal = ta.ema(close, _emaLen)
+    above = 0
+    below = 0
+    for i = 1 to _lookback
+        above += close[i] > emaVal[i] ? 1 : 0
+        below += close[i] < emaVal[i] ? 1 : 0
+    greenN = true
+    redN = true
+    for i = 1 to _confirmN
+        greenN := greenN and open[i] < close[i]
+        redN := redN and open[i] > close[i]
+    bullish = above >= _minCount and greenN
+    bearish = below >= _minCount and redN
+    trendRaw = bullish ? 1 : bearish ? -1 : 0
+    longEntry = bullish and open[1] < close[1] and open[2] < close[2] and close[1] > emaVal[1] and close[2] > emaVal[2]
+    shortEntry = bearish and open[1] > close[1] and open[2] > close[2] and close[1] < emaVal[1] and close[2] < emaVal[2]
+    o1 = open[1]
+    c1 = close[1]
+    o2 = open[2]
+    c2 = close[2]
+    e1 = emaVal[1]
+    e2 = emaVal[2]
+    belowTwo = o1 < e1 and c1 < e1 and o2 < e2 and c2 < e2
+    aboveTwo = o1 > e1 and c1 > e1 and o2 > e2 and c2 > e2
+    lastTwoRed = o1 > c1 and o2 > c2
+    lastTwoGreen = o1 < c1 and o2 < c2
+    openBelowEma = open < emaVal
+    openAboveEma = open > emaVal
+    closeLong3 = openBelowEma and lastTwoRed
+    closeShort3 = openAboveEma and lastTwoGreen
+    llCount = 0
+    hhCount = 0
+    for i = 1 to 4
+        llCount += low[i] < low[i + 1] ? 1 : 0
+        hhCount += high[i] > high[i + 1] ? 1 : 0
+    closeLong4 = close < close[1] and llCount >= 3
+    closeShort4 = close > close[1] and hhCount >= 3
+    atrSafe = math.max(nz(ta.atr(_atrLen), close * 0.01), syminfo.mintick)
+    [emaVal, trendRaw, longEntry, shortEntry, belowTwo, aboveTwo, closeLong3, closeShort3, closeLong4, closeShort4, atrSafe]
+
+[emaC, trendC, longEntryC, shortEntryC, belowTwoC, aboveTwoC, closeLong3C, closeShort3C, closeLong4C, closeShort4C, atrC] = f_data(emaLen, trendLookback, trendMinCount, trendConfirmCandles, atrLen)
+[emaS, trendS, longEntryS, shortEntryS, belowTwoS, aboveTwoS, closeLong3S, closeShort3S, closeLong4S, closeShort4S, atrS] = request.security(syminfo.tickerid, analysisTf, f_data(emaLen, trendLookback, trendMinCount, trendConfirmCandles, atrLen), barmerge.gaps_off, barmerge.lookahead_off)
+emaVal = useChartTf ? emaC : emaS
+trendRaw = useChartTf ? trendC : trendS
+longEntry = useChartTf ? longEntryC : longEntryS
+shortEntry = useChartTf ? shortEntryC : shortEntryS
+belowTwo = useChartTf ? belowTwoC : belowTwoS
+aboveTwo = useChartTf ? aboveTwoC : aboveTwoS
+closeLong3 = useChartTf ? closeLong3C : closeLong3S
+closeShort3 = useChartTf ? closeShort3C : closeShort3S
+closeLong4 = useChartTf ? closeLong4C : closeLong4S
+closeShort4 = useChartTf ? closeShort4C : closeShort4S
+atrSafe = useChartTf ? atrC : atrS
+
+// === Regime + Slope entry filters (chart-timeframe, native) ===
+useRegime = input.bool(true, "Use Regime Filter (Price vs EMA50 vs EMA200)", tooltip="Long only when close > EMA50 AND EMA50 > EMA200. Short mirrored: close < EMA50 AND EMA50 < EMA200. Evaluated on the chart's own interval.", group="Regime Filter (EMA50/EMA200 + Slope)")
+emaFastLen = input.int(50, "Fast EMA Length", minval=1, group="Regime Filter (EMA50/EMA200 + Slope)")
+emaSlowLen = input.int(200, "Slow EMA Length", minval=1, group="Regime Filter (EMA50/EMA200 + Slope)")
+useSlope = input.bool(true, "Use EMA Slope Filter", tooltip="Long only when the EMA slope over the lookback is above +Threshold. Short only when below -Threshold.", group="Regime Filter (EMA50/EMA200 + Slope)")
+slopeOnFast = input.bool(false, "Measure slope on Fast EMA instead of Slow EMA", group="Regime Filter (EMA50/EMA200 + Slope)")
+slopeLookback = input.int(9, "Slope Lookback (periods)", minval=1, group="Regime Filter (EMA50/EMA200 + Slope)")
+slopeThresholdPct = input.float(1.0, "Slope Threshold (%) [Mega Cap preset = 1.0]", minval=0.0, step=0.1, group="Regime Filter (EMA50/EMA200 + Slope)")
+
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+emaSlopeSrc = slopeOnFast ? emaFast : emaSlow
+slopePct = (emaSlopeSrc - emaSlopeSrc[slopeLookback]) / emaSlopeSrc[slopeLookback] * 100.0
+
+regimeLongOk = not useRegime or (close > emaFast and emaFast > emaSlow)
+regimeShortOk = not useRegime or (close < emaFast and emaFast < emaSlow)
+slopeLongOk = not useSlope or (not na(slopePct) and slopePct > slopeThresholdPct)
+slopeShortOk = not useSlope or (not na(slopePct) and slopePct < -slopeThresholdPct)
+
+plot(showFastEma ? emaFast : na, title="Fast EMA", color=color.blue)
+plot(showSlowEma ? emaSlow : na, title="Slow EMA", color=color.navy)
+plot(regimeLongOk ? 1 : 0, title="Regime OK Long (close>EMA50>EMA200)", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(regimeShortOk ? 1 : 0, title="Regime OK Short (close<EMA50<EMA200)", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(slopeLongOk ? 1 : 0, title="Slope OK Long (slope > +threshold)", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(slopeShortOk ? 1 : 0, title="Slope OK Short (slope < -threshold)", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(slopePct, title="EMA Slope % (slow EMA by default)", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+// === end Regime + Slope block ===
+
+// === Hybrid exits: partial + breakeven + trailing + trend-break gate ===
+usePartial   = input.bool(false, "Partial Exit: bank a fraction at +R [Mega Cap preset = OFF]", group="Hybrid Exits")
+partialAtR   = input.float(2.0, "Partial Exit at R (multiple of initial risk)", minval=0.1, step=0.1, group="Hybrid Exits")
+partialPct   = input.float(50.0, "Partial Exit: percent of position", minval=1, maxval=100, step=5, group="Hybrid Exits")
+useBreakeven = input.bool(false, "Move Stop to Breakeven at +R [Mega Cap preset = OFF]", group="Hybrid Exits")
+beAtR        = input.float(1.0, "Breakeven trigger at R", minval=0.1, step=0.1, group="Hybrid Exits")
+useTrail     = input.bool(false, "Trailing Stop (Chandelier) [Mega Cap preset = OFF]", group="Hybrid Exits")
+trailAtrMult = input.float(2.5, "Trailing Stop ATR Multiple", minval=0.1, step=0.1, group="Hybrid Exits")
+gateReversal = input.bool(true, "Reversal exits require higher-interval trend break [Mega Cap preset = ON]", tooltip="When ON, the chart-timeframe reversal exits (4a.i / 4a.iii / 4a.iv and their short mirrors) only fire once price has lost the higher-interval EMA9.", group="Hybrid Exits")
+// === end Hybrid exits inputs ===
+
+// === SMA20 Exit / Stop Loss (chart-timeframe, native) ===
+useSma20Exit = input.bool(false, "Use SMA20 Exit (open a % away from SMA20) [Mega Cap preset = OFF]", tooltip="Long closes when the candle OPENS at or below SMA20 minus the threshold percent. Short closes when the candle OPENS at or above SMA20 plus the threshold percent. Evaluated on the chart's own interval, so it works on 30m / 1H / 4H / 1D / 1W.", group="SMA20 Exit")
+sma20Len = input.int(20, "SMA Length", minval=1, group="SMA20 Exit")
+sma20Pct = input.float(1.2, "SMA20 Exit Threshold (%)", minval=0.0, step=0.1, group="SMA20 Exit")
+
+sma20 = ta.sma(close, sma20Len)
+sma20LongTrig  = not na(sma20) and open <= sma20 * (1 - sma20Pct / 100.0)
+sma20ShortTrig = not na(sma20) and open >= sma20 * (1 + sma20Pct / 100.0)
+// === end SMA20 Exit block ===
+
+fNormTf(string tf) =>
+    tf == "1D" ? "D" : tf == "1W" ? "W" : tf == "1M" ? "M" : tf
+
+tfUsedRaw = useChartTf ? timeframe.period : analysisTf
+tfUsed = fNormTf(tfUsedRaw)
+
+fConfirmTf(string tf) =>
+    tf == "1" ? "5" : tf == "5" ? "15" : tf == "15" ? "30" : tf == "30" ? "240" : tf == "60" ? "D" : tf == "240" ? "D" : tf == "D" ? "W" : "M"
+
+string confirmTf = confirmTfOpt == "Auto" ? fConfirmTf(tfUsed) : confirmTfOpt
+fHtfEma(string tf) =>
+    tf == tfUsed ? ta.ema(close, emaLen) : request.security(syminfo.tickerid, tf, ta.ema(close, emaLen), barmerge.gaps_off, barmerge.lookahead_off)
+
+htfEma = fHtfEma(confirmTf)
+htfLongOk = not useHtfConfirm or na(htfEma) or close > htfEma
+htfShortOk = not useHtfConfirm or na(htfEma) or close < htfEma
+longEntryGated = longEntry and htfLongOk and regimeLongOk and slopeLongOk
+shortEntryGated = shortEntry and htfShortOk and regimeShortOk and slopeShortOk
+
+var int trendLatched = 0
+if barstate.isnew
+    trendLatched := trendRaw == 1 ? 1 : trendRaw == -1 ? -1 : 0
+
+inTimeFilter = time >= startFilter and time <= endFilter
+
+var float stopLevel = na
+var float trailStop = na
+var float riskUnit = na
+var bool partialDone = false
+posNow = strategy.position_size
+posBefore = nz(strategy.position_size[1], 0)
+justOpened = posNow != 0 and posBefore == 0
+flipped = (posNow > 0 and posBefore < 0) or (posNow < 0 and posBefore > 0)
+if posNow != 0 and (justOpened or flipped)
+    float rawStop = posNow > 0 ? strategy.position_avg_price - atrSafe * atrStopMult : strategy.position_avg_price + atrSafe * atrStopMult
+    stopLevel := rawStop
+    trailStop := rawStop
+    riskUnit := math.abs(strategy.position_avg_price - rawStop)
+    partialDone := false
+if posNow == 0
+    stopLevel := na
+    trailStop := na
+    riskUnit := na
+    partialDone := false
+
+// Breakeven move: once the trade has travelled beAtR in favour the stop can never return past entry.
+if useBreakeven and posNow != 0 and not na(riskUnit) and riskUnit > 0
+    if posNow > 0 and high >= strategy.position_avg_price + beAtR * riskUnit
+        stopLevel := math.max(stopLevel, strategy.position_avg_price)
+    if posNow < 0 and low <= strategy.position_avg_price - beAtR * riskUnit
+        stopLevel := math.min(stopLevel, strategy.position_avg_price)
+
+// Trailing stop built from the PREVIOUS completed bar's extreme, so it can never be hit by the bar that created it (no look-ahead).
+if posNow != 0 and not na(trailStop)
+    if posNow > 0
+        trailStop := math.max(trailStop, nz(high[1], high) - atrSafe * trailAtrMult)
+    else
+        trailStop := math.min(trailStop, nz(low[1], low) + atrSafe * trailAtrMult)
+if useTrail and posNow != 0 and not na(trailStop)
+    stopLevel := posNow > 0 ? math.max(stopLevel, trailStop) : math.min(stopLevel, trailStop)
+
+longTrendBroken  = not gateReversal or na(htfEma) or close < htfEma
+shortTrendBroken = not gateReversal or na(htfEma) or close > htfEma
+
+if inTimeFilter
+    if trendLatched == 1 and longEntryGated and strategy.position_size <= 0
+        if strategy.position_size < 0
+            strategy.close("Short", comment="Trend flip to long")
+        strategy.entry("Long", strategy.long)
+    if trendLatched == -1 and shortEntryGated and strategy.position_size >= 0
+        if strategy.position_size > 0
+            strategy.close("Long", comment="Trend flip to short")
+        strategy.entry("Short", strategy.short)
+
+    // Hybrid: bank a partial when the trade reaches +partialAtR (measured in initial risk units)
+    if usePartial and strategy.position_size != 0 and not partialDone and not na(riskUnit) and riskUnit > 0
+        if strategy.position_size > 0 and high >= strategy.position_avg_price + partialAtR * riskUnit
+            strategy.close("Long", comment="Partial Long exit at +R", qty_percent=partialPct)
+            partialDone := true
+        if strategy.position_size < 0 and low <= strategy.position_avg_price - partialAtR * riskUnit
+            strategy.close("Short", comment="Partial Short exit at +R", qty_percent=partialPct)
+            partialDone := true
+
+    if strategy.position_size > 0 and belowTwo and longTrendBroken
+        strategy.close("Long", comment="Close Long 4a.i: 2 candles O+C below EMA9")
+    if strategy.position_size < 0 and aboveTwo and shortTrendBroken
+        strategy.close("Short", comment="Close Short 4b.i: 2 candles O+C above EMA9")
+    if strategy.position_size > 0 and closeLong3 and longTrendBroken
+        strategy.close("Long", comment="Close Long 4a.iii: open below EMA9 + 2 red")
+    if strategy.position_size < 0 and closeShort3 and shortTrendBroken
+        strategy.close("Short", comment="Close Short 4b.iii: open above EMA9 + 2 green")
+    if strategy.position_size > 0 and closeLong4 and longTrendBroken
+        strategy.close("Long", comment="Close Long 4a.iv: lower close + lower-low streak")
+    if strategy.position_size < 0 and closeShort4 and shortTrendBroken
+        strategy.close("Short", comment="Close Short 4b.iv: higher close + higher-high streak")
+
+    // SMA20 exit: the candle OPENED beyond the threshold relative to SMA20 (acts as a stop loss)
+    if useSma20Exit and strategy.position_size > 0 and sma20LongTrig
+        strategy.close("Long", comment="Close Long: open >1.2% below SMA20")
+    if useSma20Exit and strategy.position_size < 0 and sma20ShortTrig
+        strategy.close("Short", comment="Close Short: open >1.2% above SMA20")
+
+    if useAtrStop and strategy.position_size > 0 and not na(stopLevel)
+        strategy.exit("ATR-L", from_entry="Long", qty=math.abs(strategy.position_size), stop=stopLevel)
+    if useAtrStop and strategy.position_size < 0 and not na(stopLevel)
+        strategy.exit("ATR-S", from_entry="Short", qty=math.abs(strategy.position_size), stop=stopLevel)
+
+plot(showEma9 ? emaVal : na, title="EMA9", color=color.purple)
+plot(stopLevel, title="ATR Stop", color=color.red, style=plot.style_linebr)
+plot(trendLatched, title="Trend (1=Bullish, -1=Bearish, 0=Sideways)", color=trendLatched == 1 ? color.lime : trendLatched == -1 ? color.red : color.gray, linewidth=2, style=plot.style_stepline, display=display.status_line + display.data_window)
+plot(trendLatched, title="Trend State", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(longEntryGated ? 1 : 0, title="Long Entry Flag", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(shortEntryGated ? 1 : 0, title="Short Entry Flag", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(belowTwo ? 1 : 0, title="Close-Long 4a.i flag", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(aboveTwo ? 1 : 0, title="Close-Short 4b.i flag", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(closeLong3 ? 1 : 0, title="Close-Long 4a.iii flag", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(closeShort3 ? 1 : 0, title="Close-Short 4b.iii flag", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(closeLong4 ? 1 : 0, title="Close-Long 4a.iv flag", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(closeShort4 ? 1 : 0, title="Close-Short 4b.iv flag", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(atrSafe * atrStopMult, title="ATR Stop Distance", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(showHtfEma and useHtfConfirm ? htfEma : na, title="Confirmation EMA9 (higher interval)", color=color.orange, style=plot.style_linebr)
+plot(htfLongOk ? 1 : 0, title="HTF Confirm OK (close above higher-EMA9)", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(riskUnit, title="Risk unit R (initial stop distance)", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(trailStop, title="Trailing stop level", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(usePartial and not partialDone and strategy.position_size != 0 ? 1 : 0, title="Partial exit armed (not yet taken)", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(gateReversal and posNow > 0 and not longTrendBroken ? 1 : 0, title="Long held: reversal exits gated", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(gateReversal and posNow < 0 and not shortTrendBroken ? 1 : 0, title="Short held: reversal exits gated", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(showSma20 ? sma20 : na, title="SMA20", color=color.new(color.teal, 0))
+plot(sma20 * (1 - sma20Pct / 100.0), title="SMA20 exit band (long)", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(sma20 * (1 + sma20Pct / 100.0), title="SMA20 exit band (short)", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(sma20LongTrig ? 1 : 0, title="SMA20 exit trigger flag (long)", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(sma20ShortTrig ? 1 : 0, title="SMA20 exit trigger flag (short)", color=color.new(color.white, 100), display=display.status_line + display.data_window)
+plot(open <= sma20 * (1 - sma20Pct / 100.0) ? open : na, title="SMA20 exit armed (price open)", color=color.new(color.white, 100), display=display.status_line + display.data_window)
